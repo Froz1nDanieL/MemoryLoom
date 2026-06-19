@@ -171,6 +171,41 @@ dotnet run --project .\src\MemoryLoomApp\MemoryLoomApp.csproj
 
 如果 `backend.exe` 不存在，WPF 会继续启动搜索窗口，并在调试输出中记录后端未找到。此时可以手动运行 FastAPI 开发服务。
 
+## 剪贴板采集测试
+
+先启动 Python 后端：
+
+```powershell
+cd E:\MemoryLoom\backend
+.\.venv\Scripts\Activate.ps1
+python -m uvicorn main:app --host 127.0.0.1 --port 8765 --reload
+```
+
+再启动 WPF：
+
+```powershell
+cd E:\MemoryLoom
+dotnet run --project .\src\MemoryLoomApp\MemoryLoomApp.csproj
+```
+
+复制一段文本，例如：
+
+```text
+Memory Loom clipboard capture smoke test
+```
+
+然后用 Python CLI 查询，避免 PowerShell 中文编码问题：
+
+```powershell
+cd E:\MemoryLoom
+python backend\tools\memoryloom_client.py search `
+  --query "clipboard capture" `
+  --backend keyword `
+  --top-k 5
+```
+
+如果返回 `source = clipboard` 的结果，说明剪贴板采集、C# 上报、FastAPI ingest、SQLite 检索链路已经打通。
+
 ## 当前接口
 
 - `GET /health`: 查看 SQLite、LanceDB、模型和 embedding job 状态。

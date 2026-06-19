@@ -7,4 +7,7 @@ public sealed record CaptureEvent(
     string Source,
     string Content,
     DateTimeOffset CapturedAt,
-    IReadOnlyDictionary<string, string>? Metadata = null);
+    IReadOnlyDictionary<string, string>? Metadata = null,
+    string? AppName = null,
+    string? WindowTitle = null,
+    string? ProcessName = null);
