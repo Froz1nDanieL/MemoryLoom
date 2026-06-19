@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>MemoryLoomApp</RootNamespace>
+    <AssemblyName>MemoryLoom</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\backend\dist\backend.exe"
+          Link="backend.exe"
+          CopyToOutputDirectory="PreserveNewest"
+          Condition="Exists('..\..\backend\dist\backend.exe')" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,27 @@
+# .NET
+src/**/bin/
+src/**/obj/
+*.user
+*.suo
+.vs/
+
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/*.py[cod]
+backend/.pytest_cache/
+
+# Backend runtime data and packaging output
+backend/database/*
+!backend/database/.gitkeep
+backend/models/*
+!backend/models/.gitkeep
+backend/dist/
+backend/build/
+backend/*.spec
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
