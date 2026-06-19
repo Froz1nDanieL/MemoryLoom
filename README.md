@@ -128,7 +128,10 @@ $env:MEMORYLOOM_DATABASE_DIR = "D:\MemoryLoomData"
 $env:MEMORYLOOM_SQLITE_PATH = "D:\MemoryLoomData\memoryloom.sqlite3"
 $env:MEMORYLOOM_LANCEDB_URI = "D:\MemoryLoomData\lancedb"
 $env:MEMORYLOOM_EMBEDDING_INTERVAL_SECONDS = "30"
+$env:MEMORYLOOM_VECTOR_MIN_SCORE = "0.54"
 ```
+
+`MEMORYLOOM_VECTOR_MIN_SCORE` 用于过滤低相关度向量结果。数据量较小时，向量库会倾向返回“最接近但不一定相关”的记录；提高该值会减少无关结果，降低该值会增加召回。
 
 ## 打包 backend.exe
 
@@ -212,6 +215,7 @@ python backend\tools\memoryloom_client.py search `
 - `POST /ingest`: 写入一条采集事件，并自动创建向量化任务。
 - `POST /search`: 混合检索，支持 `hybrid`、`keyword`、`vector`。
 - `POST /admin/embed-now`: 手动执行一次 embedding 批处理，支持 `?retry_failed=true`。
+- `POST /admin/rebuild-vector-index`: 删除并重建 LanceDB 向量索引。
 
 ## Python CLI 测试
 
@@ -226,6 +230,8 @@ python backend\tools\memoryloom_client.py ingest `
   --content "今天在浏览器里研究跨时空记忆编织，复制了一段关于 BGE 和 LanceDB 的资料。"
 
 python backend\tools\memoryloom_client.py embed-now
+
+python backend\tools\memoryloom_client.py rebuild-vector-index
 
 python backend\tools\memoryloom_client.py search `
   --query "我之前研究过什么向量数据库" `

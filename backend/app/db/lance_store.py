@@ -40,6 +40,13 @@ class LanceVectorStore:
         except Exception:
             return False
 
+    def drop_table(self) -> None:
+        if not self.table_exists():
+            return
+
+        db = self._connect()
+        db.drop_table(self._settings.lancedb_table)
+
     def upsert_chunks(self, rows: list[dict[str, Any]]) -> int:
         if not rows:
             return 0
@@ -66,7 +73,7 @@ class LanceVectorStore:
         for row in raw_results:
             distance = float(row.get("_distance", row.get("_score", 0.0)) or 0.0)
             score = 1.0 / (1.0 + max(distance, 0.0))
-            metadata = row.get("metadata")
+            metadata = row.get("metadata_json", row.get("metadata"))
             if isinstance(metadata, str):
                 try:
                     metadata = json.loads(metadata)

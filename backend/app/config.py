@@ -33,6 +33,7 @@ class Settings(BaseModel):
     embedding_interval_seconds: int = Field(default=30, ge=5, le=3600)
     max_embedding_attempts: int = Field(default=3, ge=1, le=20)
     vector_search_multiplier: int = Field(default=3, ge=1, le=10)
+    vector_min_score: float = Field(default=0.54, ge=0.0, le=1.0)
     scheduler_timezone: str = "Asia/Shanghai"
 
     @classmethod
@@ -72,6 +73,7 @@ class Settings(BaseModel):
             embedding_batch_size=int(os.getenv("MEMORYLOOM_EMBEDDING_BATCH_SIZE", "16")),
             embedding_interval_seconds=int(os.getenv("MEMORYLOOM_EMBEDDING_INTERVAL_SECONDS", "30")),
             max_embedding_attempts=int(os.getenv("MEMORYLOOM_MAX_EMBEDDING_ATTEMPTS", "3")),
+            vector_min_score=float(os.getenv("MEMORYLOOM_VECTOR_MIN_SCORE", "0.54")),
         )
 
     @property

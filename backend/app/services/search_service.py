@@ -78,7 +78,12 @@ class SearchService:
             logger.warning("Vector search skipped: %s", exc)
             return []
 
-        filtered = [match for match in matches if self._match_filters(match, payload)]
+        filtered = [
+            match
+            for match in matches
+            if match.score >= self._settings.vector_min_score
+            and self._match_filters(match, payload)
+        ]
         return [
             SearchResult(
                 event_id=match.event_id,

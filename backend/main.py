@@ -205,6 +205,26 @@ def embed_now(
         ) from exc
 
 
+@app.post("/admin/rebuild-vector-index", response_model=EmbedNowResponse)
+def rebuild_vector_index(
+    pipeline: EmbeddingPipelineDependency,
+) -> EmbedNowResponse:
+    try:
+        return pipeline.rebuild_vector_index()
+    except RuntimeError as exc:
+        logger.exception("Vector index rebuild failed")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        logger.exception("Vector index rebuild failed unexpectedly")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="vector index rebuild failed",
+        ) from exc
+
+
 if __name__ == "__main__":
     import uvicorn
 

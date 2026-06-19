@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -362,6 +363,19 @@ class SQLiteStore:
             )
             return int(cursor.rowcount)
 
+    def requeue_all_embedding_jobs(self) -> int:
+        with self._lock, self._connection:
+            self._connection.execute("DELETE FROM embedding_jobs")
+            cursor = self._connection.execute(
+                """
+                INSERT INTO embedding_jobs (event_id, status)
+                SELECT id, 'pending'
+                FROM memory_events
+                ORDER BY id
+                """
+            )
+            return int(cursor.rowcount)
+
     def keyword_search(self, payload: SearchRequest, limit: int) -> list[MemoryEventRecord]:
         query = payload.query.strip()
         records: list[MemoryEventRecord] = []
@@ -449,20 +463,26 @@ class SQLiteStore:
         limit: int,
         query: str,
     ) -> list[MemoryEventRecord]:
+        terms = self._build_like_terms(query)
         where_clauses, params = self._build_event_filters(payload, table_alias="e")
-        where_clauses.append(
-            """
-            (
-                e.content LIKE ?
-                OR e.source LIKE ?
-                OR COALESCE(e.app_name, '') LIKE ?
-                OR COALESCE(e.window_title, '') LIKE ?
-                OR COALESCE(e.url, '') LIKE ?
+        term_clauses: list[str] = []
+        for term in terms:
+            term_clauses.append(
+                """
+                (
+                    e.content LIKE ?
+                    OR e.source LIKE ?
+                    OR COALESCE(e.app_name, '') LIKE ?
+                    OR COALESCE(e.window_title, '') LIKE ?
+                    OR COALESCE(e.url, '') LIKE ?
+                    OR COALESCE(e.metadata_json, '') LIKE ?
+                )
+                """
             )
-            """
-        )
-        like_query = f"%{query}%"
-        params.extend([like_query, like_query, like_query, like_query, like_query])
+            like_term = f"%{term}%"
+            params.extend([like_term, like_term, like_term, like_term, like_term, like_term])
+
+        where_clauses.append(f"({' OR '.join(term_clauses)})")
 
         with self._lock:
             rows = self._connection.execute(
@@ -476,6 +496,25 @@ class SQLiteStore:
                 (*params, limit),
             ).fetchall()
         return [self._row_to_event(row) for row in rows]
+
+    @staticmethod
+    def _build_like_terms(query: str) -> list[str]:
+        terms: list[str] = [query]
+
+        for token in re.findall(r"[A-Za-z0-9_#.+-]{2,}", query):
+            terms.append(token)
+
+        seen: set[str] = set()
+        unique_terms: list[str] = []
+        for term in terms:
+            normalized = term.strip()
+            key = normalized.casefold()
+            if len(normalized) < 2 or key in seen:
+                continue
+            seen.add(key)
+            unique_terms.append(normalized)
+
+        return unique_terms
 
     @staticmethod
     def _build_event_filters(

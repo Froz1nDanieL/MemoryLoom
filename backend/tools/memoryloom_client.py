@@ -74,6 +74,10 @@ def embed_now(args: argparse.Namespace) -> None:
     print_json(request_json("POST", url))
 
 
+def rebuild_vector_index(args: argparse.Namespace) -> None:
+    print_json(request_json("POST", f"{args.base_url}/admin/rebuild-vector-index"))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Memory Loom backend API client.")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
@@ -104,6 +108,12 @@ def build_parser() -> argparse.ArgumentParser:
     embed_parser = subparsers.add_parser("embed-now", help="Run one embedding batch.")
     embed_parser.add_argument("--retry-failed", action="store_true")
     embed_parser.set_defaults(func=embed_now)
+
+    rebuild_parser = subparsers.add_parser(
+        "rebuild-vector-index",
+        help="Drop and rebuild the LanceDB vector index from SQLite events.",
+    )
+    rebuild_parser.set_defaults(func=rebuild_vector_index)
 
     return parser
 

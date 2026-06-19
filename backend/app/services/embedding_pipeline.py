@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from typing import Any
 
 from app.config import Settings
@@ -66,6 +67,16 @@ class EmbeddingPipeline:
     def requeue_failed_jobs(self) -> int:
         return self._sqlite_store.requeue_failed_jobs()
 
+    def rebuild_vector_index(self) -> EmbedNowResponse:
+        self._lance_store.drop_table()
+        queued = self._sqlite_store.requeue_all_embedding_jobs()
+        response = self.run_once()
+        return response.model_copy(
+            update={
+                "message": f"vector index rebuild queued {queued} event(s); {response.message}"
+            }
+        )
+
     def _build_lance_rows(self, jobs: list[EmbeddingJobRecord]) -> list[dict[str, Any]]:
         chunk_records: list[tuple[EmbeddingJobRecord, int, str]] = []
         for job in jobs:
@@ -95,7 +106,7 @@ class EmbeddingPipeline:
                     "app_name": event.app_name,
                     "window_title": event.window_title,
                     "url": event.url,
-                    "metadata": event.metadata,
+                    "metadata_json": json.dumps(event.metadata, ensure_ascii=False),
                     "content_hash": event.content_hash,
                 }
             )
