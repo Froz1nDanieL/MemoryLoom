@@ -1,224 +1,122 @@
 from __future__ import annotations
 
-import json
 import logging
-import os
-import sqlite3
-import threading
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+from typing import Annotated
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel, Field
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 
+from app.config import APP_VERSION, Settings
+from app.db.lance_store import LanceVectorStore
+from app.db.sqlite_store import SQLiteStore
+from app.schemas import (
+    EmbedNowResponse,
+    HealthResponse,
+    IngestRequest,
+    IngestResponse,
+    SearchRequest,
+    SearchResponse,
+)
+from app.services.embedding_pipeline import EmbeddingPipeline
+from app.services.embedding_service import EmbeddingService
+from app.services.search_service import SearchService
 
-APP_VERSION = "0.1.0"
-BASE_DIR = Path(__file__).resolve().parent
-DATABASE_DIR = BASE_DIR / "database"
-DEFAULT_SQLITE_PATH = DATABASE_DIR / "buffer.sqlite3"
 
 logger = logging.getLogger("memoryloom.backend")
-logging.basicConfig(
-    level=os.getenv("MEMORYLOOM_LOG_LEVEL", "INFO"),
-    format="%(asctime)s %(levelname)s %(name)s - %(message)s",
-)
-
-
-class IngestRequest(BaseModel):
-    source: str = Field(..., min_length=1, max_length=128)
-    content: str = Field(..., min_length=1)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    captured_at: datetime | None = None
-
-
-class IngestResponse(BaseModel):
-    id: int
-    status: str
-
-
-class SearchRequest(BaseModel):
-    query: str = Field(..., min_length=1)
-    top_k: int = Field(default=10, ge=1, le=50)
-
-
-class SearchResult(BaseModel):
-    id: str
-    source: str
-    content: str
-    score: float
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    captured_at: datetime
-
-
-class SearchResponse(BaseModel):
-    query: str
-    backend: str
-    results: list[SearchResult]
-
-
-class SQLiteBuffer:
-    def __init__(self, database_target: str) -> None:
-        self._database_target = database_target
-        self._lock = threading.RLock()
-        self._connection = self._connect(database_target)
-        self._initialize_schema()
-
-    @staticmethod
-    def _connect(database_target: str) -> sqlite3.Connection:
-        if database_target != ":memory:":
-            Path(database_target).parent.mkdir(parents=True, exist_ok=True)
-
-        connection = sqlite3.connect(
-            database_target,
-            check_same_thread=False,
-            detect_types=sqlite3.PARSE_DECLTYPES,
-        )
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 5000")
-
-        if database_target != ":memory:":
-            connection.execute("PRAGMA journal_mode = WAL")
-
-        return connection
-
-    def _initialize_schema(self) -> None:
-        with self._lock, self._connection:
-            self._connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS ingest_buffer (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    captured_at TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    embedded INTEGER NOT NULL DEFAULT 0,
-                    last_error TEXT
-                )
-                """
-            )
-            self._connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_ingest_buffer_embedded
-                ON ingest_buffer (embedded, created_at)
-                """
-            )
-            self._connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_ingest_buffer_source
-                ON ingest_buffer (source, captured_at)
-                """
-            )
-
-    def insert(self, payload: IngestRequest) -> int:
-        captured_at = payload.captured_at or datetime.now(timezone.utc)
-        metadata_json = json.dumps(payload.metadata, ensure_ascii=False)
-
-        with self._lock, self._connection:
-            cursor = self._connection.execute(
-                """
-                INSERT INTO ingest_buffer (source, content, metadata_json, captured_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    payload.source,
-                    payload.content,
-                    metadata_json,
-                    captured_at.astimezone(timezone.utc).isoformat(),
-                ),
-            )
-            return int(cursor.lastrowid)
-
-    def keyword_search(self, query: str, limit: int) -> list[sqlite3.Row]:
-        like_query = f"%{query}%"
-
-        with self._lock:
-            cursor = self._connection.execute(
-                """
-                SELECT id, source, content, metadata_json, captured_at
-                FROM ingest_buffer
-                WHERE content LIKE ?
-                ORDER BY captured_at DESC
-                LIMIT ?
-                """,
-                (like_query, limit),
-            )
-            return list(cursor.fetchall())
-
-    def count_pending_embeddings(self) -> int:
-        with self._lock:
-            cursor = self._connection.execute(
-                "SELECT COUNT(*) AS total FROM ingest_buffer WHERE embedded = 0"
-            )
-            row = cursor.fetchone()
-            return int(row["total"] if row else 0)
-
-    def close(self) -> None:
-        with self._lock:
-            self._connection.close()
-
-
-def get_sqlite_target() -> str:
-    return os.getenv("MEMORYLOOM_SQLITE_PATH", str(DEFAULT_SQLITE_PATH))
-
-
-def build_scheduler(buffer: SQLiteBuffer) -> BackgroundScheduler:
-    scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
-    scheduler.add_job(
-        lambda: run_embedding_batch(buffer),
-        trigger="interval",
-        minutes=5,
-        id="embedding-batch",
-        max_instances=1,
-        replace_existing=True,
-    )
-    return scheduler
-
-
-def run_embedding_batch(buffer: SQLiteBuffer) -> None:
-    pending_count = buffer.count_pending_embeddings()
-    if pending_count:
-        logger.info("Embedding batch placeholder: %s pending item(s)", pending_count)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    buffer = SQLiteBuffer(get_sqlite_target())
-    scheduler = build_scheduler(buffer)
+    settings = Settings.from_env()
+    settings.configure_logging()
 
-    app.state.buffer = buffer
+    sqlite_store = SQLiteStore(settings)
+    embedding_service = EmbeddingService(settings)
+    lance_store = LanceVectorStore(settings)
+    embedding_pipeline = EmbeddingPipeline(
+        settings=settings,
+        sqlite_store=sqlite_store,
+        embedding_service=embedding_service,
+        lance_store=lance_store,
+    )
+    search_service = SearchService(
+        settings=settings,
+        sqlite_store=sqlite_store,
+        embedding_service=embedding_service,
+        lance_store=lance_store,
+    )
+
+    scheduler = BackgroundScheduler(timezone=settings.scheduler_timezone)
+    scheduler.add_job(
+        embedding_pipeline.run_once,
+        trigger="interval",
+        seconds=settings.embedding_interval_seconds,
+        id="embedding-batch",
+        max_instances=1,
+        replace_existing=True,
+    )
+
+    app.state.settings = settings
+    app.state.sqlite_store = sqlite_store
+    app.state.embedding_service = embedding_service
+    app.state.lance_store = lance_store
+    app.state.embedding_pipeline = embedding_pipeline
+    app.state.search_service = search_service
     app.state.scheduler = scheduler
 
     scheduler.start()
-    logger.info("Memory Loom backend started")
+    logger.info("Memory Loom backend started with database dir: %s", settings.database_dir)
 
     try:
         yield
     finally:
         scheduler.shutdown(wait=False)
-        buffer.close()
+        sqlite_store.close()
         logger.info("Memory Loom backend stopped")
 
 
 app = FastAPI(
     title="Memory Loom Backend",
     version=APP_VERSION,
-    description="Local ingest and retrieval service for Memory Loom.",
+    description="Local ingest, embedding and hybrid retrieval service for Memory Loom.",
     lifespan=lifespan,
 )
 
 
-def buffer_from_app() -> SQLiteBuffer:
-    return app.state.buffer
+def get_settings() -> Settings:
+    return app.state.settings
 
 
-@app.get("/health")
-def health() -> dict[str, Any]:
+def get_sqlite_store() -> SQLiteStore:
+    return app.state.sqlite_store
+
+
+def get_embedding_pipeline() -> EmbeddingPipeline:
+    return app.state.embedding_pipeline
+
+
+def get_search_service() -> SearchService:
+    return app.state.search_service
+
+
+SettingsDependency = Annotated[Settings, Depends(get_settings)]
+SQLiteStoreDependency = Annotated[SQLiteStore, Depends(get_sqlite_store)]
+EmbeddingPipelineDependency = Annotated[EmbeddingPipeline, Depends(get_embedding_pipeline)]
+SearchServiceDependency = Annotated[SearchService, Depends(get_search_service)]
+
+
+@app.get("/health", response_model=HealthResponse)
+def health(
+    settings: SettingsDependency,
+    sqlite_store: SQLiteStoreDependency,
+) -> HealthResponse:
     try:
-        pending = buffer_from_app().count_pending_embeddings()
+        counts = sqlite_store.embedding_job_counts()
+        total_events = sqlite_store.count_events()
+        model_reference = settings.model_reference
+        lance_ready = app.state.lance_store.table_exists()
+        model_loaded = app.state.embedding_service.is_loaded
     except Exception as exc:
         logger.exception("Health check failed")
         raise HTTPException(
@@ -226,63 +124,94 @@ def health() -> dict[str, Any]:
             detail="backend health check failed",
         ) from exc
 
-    return {
-        "status": "ok",
-        "version": APP_VERSION,
-        "pending_embeddings": pending,
-    }
+    return HealthResponse(
+        status="ok",
+        version=settings.version,
+        sqlite_path=str(settings.sqlite_path),
+        lancedb_uri=str(settings.lancedb_uri),
+        model_reference=str(model_reference),
+        model_loaded=model_loaded,
+        lancedb_ready=lance_ready,
+        total_events=total_events,
+        embedding_jobs=counts,
+    )
 
 
 @app.post("/ingest", response_model=IngestResponse, status_code=status.HTTP_202_ACCEPTED)
-def ingest(payload: IngestRequest) -> IngestResponse:
+def ingest(
+    payload: IngestRequest,
+    sqlite_store: SQLiteStoreDependency,
+) -> IngestResponse:
     try:
-        event_id = buffer_from_app().insert(payload)
-    except sqlite3.Error as exc:
-        logger.exception("Failed to write ingest payload")
+        record = sqlite_store.insert_event(payload)
+    except Exception as exc:
+        logger.exception("Failed to ingest payload")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="failed to buffer ingest payload",
+            detail="failed to ingest payload",
         ) from exc
 
-    return IngestResponse(id=event_id, status="accepted")
+    return IngestResponse(
+        id=record.event_id,
+        status="accepted",
+        queued_for_embedding=True,
+        content_hash=record.content_hash,
+    )
 
 
 @app.post("/search", response_model=SearchResponse)
-def search(payload: SearchRequest) -> SearchResponse:
-    query = payload.query.strip()
-    if not query:
+def search(
+    payload: SearchRequest,
+    search_service: SearchServiceDependency,
+) -> SearchResponse:
+    try:
+        return search_service.search(payload)
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="query must not be empty",
-        )
-
-    try:
-        rows = buffer_from_app().keyword_search(query, payload.top_k)
-    except sqlite3.Error as exc:
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
         logger.exception("Search failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="search failed",
         ) from exc
 
-    results = [
-        SearchResult(
-            id=str(row["id"]),
-            source=row["source"],
-            content=row["content"],
-            score=0.0,
-            metadata=json.loads(row["metadata_json"] or "{}"),
-            captured_at=datetime.fromisoformat(row["captured_at"]),
-        )
-        for row in rows
-    ]
 
-    return SearchResponse(query=query, backend="sqlite-buffer", results=results)
+@app.post("/admin/embed-now", response_model=EmbedNowResponse)
+def embed_now(
+    pipeline: EmbeddingPipelineDependency,
+    retry_failed: Annotated[
+        bool,
+        Query(description="Requeue failed embedding jobs before running the batch."),
+    ] = False,
+) -> EmbedNowResponse:
+    try:
+        if retry_failed:
+            pipeline.requeue_failed_jobs()
+        return pipeline.run_once()
+    except RuntimeError as exc:
+        logger.exception("Embedding batch failed")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        logger.exception("Embedding batch failed unexpectedly")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="embedding batch failed",
+        ) from exc
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    host = os.getenv("MEMORYLOOM_BACKEND_HOST", "127.0.0.1")
-    port = int(os.getenv("MEMORYLOOM_BACKEND_PORT", "8765"))
-    uvicorn.run("main:app", host=host, port=port, reload=False)
+    runtime_settings = Settings.from_env()
+    uvicorn.run(
+        "main:app",
+        host=runtime_settings.host,
+        port=runtime_settings.port,
+        reload=False,
+    )
